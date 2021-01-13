@@ -23,6 +23,9 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/serializer"
 	"k8s.io/apimachinery/pkg/version"
 	genericapiserver "k8s.io/apiserver/pkg/server"
+	"k8s.io/apiserver/pkg/util/feature"
+	"sigs.k8s.io/apiserver-runtime/pkg/builder/resource/resourcerest"
+	"sigs.k8s.io/apiserver-runtime/pkg/features"
 )
 
 var (
@@ -120,6 +123,29 @@ func (c completedConfig) New() (*WardleServer, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	// change: apiserver-runtime
+	//
+	// if a sub-resource explicitly implemented resourcerest.Responder, remove it from the
+	// apiGroups and install as a dedicated raw handler.
+	if feature.DefaultMutableFeatureGate.Enabled(features.HTTPHandlerSubResource) {
+		for _, apiGroup := range apiGroups {
+			for versionName, version := range apiGroup.VersionedResourcesStorageMap {
+				for resourceName, storage := range version {
+					if !isHTTPHandlerSubResource(storage) {
+						continue
+					}
+					if handler, ok := storage.(resourcerest.HTTPHandler); ok {
+						apiPath := "/apis/" + apiGroup.MetaGroupVersion.Group + "/" + versionName
+						s.GenericAPIServer.Handler.NonGoRestfulMux.Handle(apiPath, handler)
+						s.GenericAPIServer.Handler.NonGoRestfulMux.UnlistedHandlePrefix(apiPath+"/", handler)
+						delete(version, resourceName)
+					}
+				}
+			}
+		}
+	}
+
 	for _, apiGroup := range apiGroups {
 		if err := s.GenericAPIServer.InstallAPIGroup(apiGroup); err != nil {
 			return nil, err
